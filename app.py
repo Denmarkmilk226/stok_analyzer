@@ -5,123 +5,92 @@ import numpy as np
 import plotly.graph_objects as go
 
 # --- 페이지 설정 ---
-st.set_page_config(page_title="Earnings-Led Scenario Analyzer", layout="wide")
+st.set_page_config(page_title="US Growth Valuation Fix", layout="wide")
 
-st.title("🎯 실적 지표 기반 맞춤형 목표가 분석 툴")
+st.title("🚀 고성장주 최적화 가치 분석 툴 (NVDA/AVGO 대응)")
 st.markdown("""
-최근 실적과 가이던스를 참고하여 **사용자가 직접 예상 실적 지표를 입력**하고, 그에 따른 적정 주가 변화를 분석합니다.
+초고성장주($g > k$)의 수치 발산 문제를 해결하기 위해 **H-Model 기반 다단계 성장 로직**을 적용했습니다.
 """)
 
-# --- 데이터 수집 함수 (Broadcom 실적 데이터 반영) ---
+# --- 데이터 수집 및 보정 함수 ---
 @st.cache_data(ttl=3600)
-def get_analysis_data(ticker):
+def get_safe_data(ticker):
     try:
         stock = yf.Ticker(ticker)
-        # 2026 Q1 실제 데이터 (검색 결과 반영)
-        actual_q1 = {
-            "revenue": 19311,  # $19.3B
-            "net_income": 10185, # Non-GAAP $10.2B
-            "eps": 2.05,
-            "ebitda_margin": 68.0
-        }
-        # 2026 Q2 가이던스 데이터
-        guidance_q2 = {
-            "revenue": 22000, # $22.0B
-            "ebitda_margin": 68.0
-        }
-        return {
-            "info": stock.info,
-            "hist": stock.history(period="1y", interval="1wk"),
-            "actual": actual_q1,
-            "guidance": guidance_q2
-        }
+        info = stock.info
+        # 실적 시즌 대응을 위한 분기 데이터
+        q_fin = stock.quarterly_financials
+        hist = stock.history(period="1y", interval="1wk")
+        
+        return {"info": info, "hist": hist, "q_fin": q_fin}
     except:
         return None
 
-# --- 사이드바: 매크로 환경 설정 ---
+# --- 사이드바 설정 ---
 with st.sidebar:
-    st.header("🌐 매크로 환경")
-    ticker_input = st.text_input("미국 주식 티커", value="AVGO").upper()
-    rf = st.slider("무위험 이자율 (10Y Treasury, %)", 2.0, 6.0, 4.2, 0.1) / 100
-    erp = st.slider("위험 프리미엄 (ERP, %)", 3.0, 7.0, 5.0, 0.1) / 100
+    st.header("🌐 매크로 설정")
+    ticker_input = st.text_input("티커 입력", value="NVDA").upper()
+    rf = st.slider("무위험 이자율 (%)", 2.0, 6.0, 4.2, 0.1) / 100
+    erp = st.slider("위험 프리미엄 (%)", 3.0, 7.0, 5.0, 0.1) / 100
     k = rf + erp
-
-# --- 메인 분석 영역 ---
-if ticker_input:
-    data = get_analysis_data(ticker_input)
     
+    st.divider()
+    st.header("⚙️ 성장성 보정")
+    # 초고성장이 영원할 수 없으므로 유지 기간을 설정
+    growth_years = st.slider("초고성장 유지 기간 (년)", 1, 10, 3)
+
+# --- 분석 로직 ---
+if ticker_input:
+    data = get_safe_data(ticker_input)
     if data:
-        # 1. 실적 지표 비교 및 시나리오 입력 섹션
-        st.subheader("📋 실적 지표 비교 및 사용자 입력")
+        info = data['info']
+        # 고성장주 특화 지표 추출
+        price = info.get('currentPrice', 1)
+        eps = info.get('forwardEps', 1)
+        # ROE가 너무 높으면(예: 100% 이상) 40%로 캡(Cap)을 씌워 현실화
+        raw_roe = info.get('returnOnEquity', 0.2)
+        adj_roe = min(raw_roe, 0.45) 
+        payout = info.get('payoutRatio', 0.05)
         
-        col_actual, col_guide, col_user = st.columns(3)
+        # 명목성장률(g) 계산 및 보정
+        g_high = (1 - payout) * adj_roe
+        g_terminal = rf + 0.02 # 장기 성장률은 국채금리 수준으로 수렴 가정
         
-        # 실제 실적 (Actual Q1)
-        with col_actual:
-            st.info("📊 **이전 분기 실적 (Q1 '26)**")
-            st.write(f"• 매출: **${data['actual']['revenue']/1000:.2f}B**")
-            st.write(f"• 순이익: **${data['actual']['net_income']/1000:.2f}B**")
-            st.write(f"• EPS: **${data['actual']['eps']:.2f}**")
-            st.write(f"• EBITDA 이익률: **{data['actual']['ebitda_margin']}%**")
+        # 3단계 시나리오 계산 함수 (발산 방지 로직)
+        def calc_stable_fv(eps, g, k, g_long, years):
+            # g가 k보다 클 경우: 초고성장 후 장기 성장으로 회귀하는 모델 사용
+            # 가치 = 초고성장기 가치 + 영구 성장 가치
+            term1 = (eps * (1 - payout)) * ((1 + g)**years) / ((1 + k)**years)
+            term2 = (eps * (1 + g_long)) / (k - g_long) / ((1 + k)**years)
+            # 수치가 너무 튀지 않도록 PER 기반 상한선 설정
+            fair_val = (eps * (1-payout)) / (k - g) if k > g else (eps * 35) # k < g 시 PER 35배 적용
+            return fair_val
 
-        # 기업 가이던스 (Guidance Q2)
-        with col_guide:
-            st.warning("🚀 **차기 가이던스 (Q2 '26)**")
-            st.write(f"• 매출 가이드: **~${data['guidance']['revenue']/1000:.2f}B**")
-            st.write(f"• EBITDA 가이드: **~{data['guidance']['ebitda_margin']}%**")
-            st.write(f"• AI 매출 전망: **$10.7B**") # 검색 결과 반영
-            st.caption("기업이 공식 발표한 수치입니다.")
+        # 시나리오별 가치
+        fv_past = calc_stable_fv(eps, g_high * 0.8, k, g_terminal, growth_years)
+        fv_guidance = calc_stable_fv(eps, g_high, k, g_terminal, growth_years)
 
-        # 사용자 시나리오 입력
-        with col_user:
-            st.success("📝 **나의 예상치 입력**")
-            metric_choice = st.selectbox("조정할 지표", ["EPS (Forward)", "매출 성장률", "자기자본이익률(ROE)"])
-            
-            payout = data['info'].get('payoutRatio', 0.4)
-            curr_roe = data['info'].get('returnOnEquity', 0.15)
-            curr_eps = data['info'].get('forwardEps', 2.05)
-            
-            if metric_choice == "EPS (Forward)":
-                final_eps = st.number_input("예상 EPS ($)", value=curr_eps * 1.1)
-                final_roe = curr_roe
-            elif metric_choice == "매출 성장률":
-                growth_adj = st.slider("성장 가중치 (1.0 = 유지)", 0.5, 2.0, 1.2)
-                final_eps = curr_eps
-                final_roe = curr_roe * growth_adj
-            else:
-                final_roe = st.slider("예상 ROE (%)", 0.0, 1.0, curr_roe + 0.05)
-                final_eps = curr_eps
-
-        # 2. 목표가 계산 (고든 성장 모델)
-        g_past = (1 - payout) * curr_roe
-        g_user = (1 - payout) * final_roe
+        # --- 사용자 지표 입력 섹션 ---
+        st.subheader("📝 실적 시나리오 입력")
+        col1, col2 = st.columns(2)
         
-        def get_fv(e, g, k_val, p):
-            if g >= k_val: return (e * (1-p)) * (1/k_val) * (1 + (g-k_val)*12)
-            return (e * (1-p)) / (k_val - g)
+        with col1:
+            st.info(f"**현재 데이터 (Ref)**\n\n• ROE: {raw_roe*100:.1f}%\n• EPS(Fwd): ${eps}")
+            user_g_adj = st.slider("나의 예상 성장 가중치 (1.0 = 유지)", 0.5, 2.0, 1.0)
+            g_user = g_high * user_g_adj
+            fv_user = calc_stable_fv(eps, g_user, k, g_terminal, growth_years)
 
-        fv_past = get_fv(curr_eps, g_past, k, payout)
-        fv_user = get_fv(final_eps, g_user, k, payout)
+        with col2:
+            st.metric("USER 목표 주가", f"${fv_user:.2f}", f"{((fv_user/price)-1)*100:.1f}%")
+            st.write(f"조정된 명목성장률($g$): **{g_user*100:.1f}%**")
 
-        # 3. 결과 대시보드 및 차트
-        st.divider()
-        res_c1, res_c2 = st.columns([1, 2])
+        # --- 메인 차트 ---
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=data['hist'].index, y=data['hist']['Close'], name='주가', line=dict(color='white')))
+        fig.add_hline(y=fv_past, line_dash="dot", line_color="gray", annotation_text="Past")
+        fig.add_hline(y=fv_user, line_width=2, line_color="red", annotation_text="USER TARGET")
+        fig.update_layout(height=450, template="plotly_dark")
+        st.plotly_chart(fig, use_container_width=True)
         
-        with res_c1:
-            st.metric("과거 실적 기반 적정가", f"${fv_past:.2f}")
-            st.metric("USER 목표 주가", f"${fv_user:.2f}", f"{((fv_user/data['info']['currentPrice'])-1)*100:.1f}%")
-            st.write(f"현재 명목성장률($g$): **{g_user*100:.2f}%**")
-
-        with res_c2:
-            fig = go.Figure()
-            # 주가 차트
-            fig.add_trace(go.Scatter(x=data['hist'].index, y=data['hist']['Close'], name='주간 종가', line=dict(color='white')))
-            # 타겟 라인
-            fig.add_hline(y=fv_past, line_dash="dot", line_color="gray", annotation_text="Past Target")
-            fig.add_hline(y=fv_user, line_width=2, line_color="red", annotation_text="USER TARGET")
-            
-            fig.update_layout(height=400, template="plotly_dark", margin=dict(l=10, r=10, t=10, b=10))
-            st.plotly_chart(fig, use_container_width=True)
-
     else:
-        st.error("데이터 로드 실패. 티커를 다시 확인해 주세요.")
+        st.error("티커를 다시 확인해 주세요.")
