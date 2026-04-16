@@ -3,15 +3,15 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-from datetime import datetime, timedelta
+import plotly.express as px  # <-- 이 부분이 px 에러를 해결하는 핵심 라인입니다.
 
 # --- 페이지 설정 ---
 st.set_page_config(page_title="US Equity Growth Analyzer", layout="wide")
 
-st.title("📈 명목성장률($g$) 기반 미국 주식 투자 분석 툴")
+st.title("📈 명목성장률(g) 기반 미국 주식 투자 분석 툴")
 st.markdown("""
 NH투자증권의 2026 경제 전망 이론을 바탕으로 설계되었습니다. 
-**명목성장률($g$)**과 **요구수익률($k$)**의 관계를 통해 기업의 내재가치를 산출하고 주가 위치를 확인합니다.
+**명목성장률(g)**과 **요구수익률(k)**의 관계를 통해 기업의 내재가치를 산출하고 주가 위치를 확인합니다.
 """)
 
 # --- 사이드바: 입력 및 설정 ---
@@ -69,7 +69,6 @@ if ticker_input:
         
         # 적정 주가 계산 (고든 성장 모델 분해)
         if g >= k:
-            # g가 k보다 클 경우 모델 한계를 고려한 프리미엄 방식 적용
             fair_value = eps_forward * (1 / k) * (1 + (g - k) * 10)
         else:
             fair_value = (eps_forward * (1 - payout)) / (k - g)
@@ -119,6 +118,7 @@ if ticker_input:
         with col_left:
             st.subheader("📌 ROE 듀퐁 분석")
             try:
+                # 듀퐁 분석 3분해 로직
                 ni = data_bundle['financials'].loc['Net Income'].iloc[0]
                 rev = data_bundle['financials'].loc['Total Revenue'].iloc[0]
                 ast = data_bundle['balance_sheet'].loc['Total Assets'].iloc[0]
@@ -128,9 +128,9 @@ if ticker_input:
                 turnover = rev / ast
                 lev = ast / eq
                 
-                st.write(f"• **순이익률**: {margin*100:.1f}%")
-                st.write(f"• **자산회전율**: {turnover:.2f}x")
-                st.write(f"• **재무 레버리지**: {lev:.2f}x")
+                st.write(f"• **순이익률(2024년 주동인)**: {margin*100:.1f}%")
+                st.write(f"• **자산회전율(2023년 주동인)**: {turnover:.2f}x")
+                st.write(f"• **재무 레버리지(2025년 기대인)**: {lev:.2f}x")
                 st.caption("회전율이 개선되는 기업은 실적 시즌 g의 상향 가능성이 높습니다.")
             except:
                 st.warning("일부 재무 데이터를 불러올 수 없습니다.")
@@ -149,6 +149,7 @@ if ticker_input:
                     row.append(val)
                 z_data.append(row)
                 
+            # px 에러가 해결된 히트맵 코드
             fig_hm = px.imshow(
                 z_data,
                 x=[f"k={kv*100:.1f}%" for kv in k_range],
